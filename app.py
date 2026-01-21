@@ -13,38 +13,47 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
 # ===================== CONFIG =====================
-SERP_API_KEY = "14386fbcac3862b9e4a01e7b81d452c828740f448f09ca2f4c42995ed4e5bb6c"
+SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
 
 INDUSTRY_SEARCH_QUERY = (
-    "specialty chemicals OR non-ionic surfactants OR ethylene oxide "
-    "OR green chemistry OR bio-based intermediates OR tariffs OR regulation OR supply chain"
+    "specialty chemicals OR surfactants OR ethylene oxide OR green chemistry "
+    "OR bio-based intermediates OR specialty materials OR chemical supply chain"
 )
+
+CHEM_KEYWORDS = [
+    "chemical", "chemicals", "polymer", "resin", "surfactant",
+    "battery", "additive", "coating", "specialty", "materials",
+    "sustainability", "bio", "ethylene", "oxide", "pharma"
+]
 
 # ===================== STREAMLIT =====================
 st.set_page_config(page_title="Automated Weekly Insights", layout="centered")
 st.title("📊 Automated Weekly Insights – Specialty Chemicals")
 
-# ===================== MODEL (CACHED) =====================
+# ===================== MODEL =====================
 @st.cache_resource
 def load_model():
     return pipeline("summarization", model="facebook/bart-large-cnn")
 
 summarizer = load_model()
 
-# ===================== HELPERS =====================
+# ===================== TEXT HELPERS =====================
 def clean_text(text):
-    text = text.replace("\n", " ").replace("?", "")
+    text = text.replace("\n", " ")
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s+\S*$", "", text)
     return text.strip()
 
-def summarize_text(text, max_len=130, min_len=50):
-    if not text or len(text) < 50:
+def normalize_sentences(text):
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 40]
+    return " ".join(sentences)
+
+def summarize_text(text, max_len=140, min_len=60):
+    if not text or len(text) < 100:
         return ""
-    max_length = min(max_len, max(len(text) // 2, min_len))
     result = summarizer(
         text[:1024],
-        max_length=max_length,
+        max_length=max_len,
         min_length=min_len,
         do_sample=False,
     )
@@ -57,7 +66,11 @@ def remove_similar(sentences, threshold=0.85):
             result.append(s)
     return result
 
-# ===================== SERPAPI (REST) =====================
+def is_relevant(text):
+    t = text.lower()
+    return any(k in t for k in CHEM_KEYWORDS)
+
+# ===================== SERPAPI =====================
 def serpapi_news_search(query, num=10):
     url = "https://serpapi.com/search.json"
     params = {
@@ -68,58 +81,58 @@ def serpapi_news_search(query, num=10):
         "num": num,
         "api_key": SERP_API_KEY,
     }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json().get("news_results", [])
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json().get("news_results", [])
 
-# ===================== INDUSTRY NEWS =====================
+# ===================== INDUSTRY =====================
 async def fetch_industry_news():
-    results = serpapi_news_search(INDUSTRY_SEARCH_QUERY, num=15)
-
+    results = serpapi_news_search(INDUSTRY_SEARCH_QUERY, 15)
     snippets = []
-    news_list = []
-    source_links = set()
 
     for r in results:
         snippet = clean_text(r.get("snippet", ""))
-        if snippet:
+        if snippet and is_relevant(snippet):
             snippets.append(snippet)
-            news_list.append(
-                {
-                    "Headline": r.get("title", ""),
-                    "Date": r.get("date", ""),
-                    "URL": r.get("link", ""),
-                    "Content": snippet,
-                }
-            )
-            source_links.add(r.get("link", ""))
 
-    unique_snippets = remove_similar(list(dict.fromkeys(snippets)))
-    summary = summarize_text(" ".join(unique_snippets))
-    return summary, news_list, list(source_links)[:5]
+    snippets = remove_similar(snippets)
+    combined = normalize_sentences(" ".join(snippets))
+    summary = summarize_text(combined)
 
-# ===================== COMPANY NEWS =====================
+    if not summary:
+        summary = (
+            "No major industry-wide developments were reported in the specialty "
+            "chemicals sector during the past week."
+        )
+
+    return summary
+
+# ===================== COMPANY =====================
 async def fetch_company_news(companies):
     summaries = {}
-    source_links = set()
 
     for company in companies:
-        results = serpapi_news_search(company, num=5)
+        results = serpapi_news_search(company, 5)
         snippets = []
 
         for r in results:
             snippet = clean_text(r.get("snippet", ""))
-            if snippet:
+            if snippet and is_relevant(snippet):
                 snippets.append(snippet)
-                source_links.add(r.get("link", ""))
 
-        unique_snippets = remove_similar(list(dict.fromkeys(snippets)))
-        combined = " ".join(unique_snippets)
+        snippets = remove_similar(snippets)
+        combined = normalize_sentences(" ".join(snippets))
+        summary = summarize_text(combined)
 
-        if combined:
-            summaries[company] = summarize_text(combined)
+        if not summary or len(summary.split()) < 40:
+            summary = (
+                "No material corporate developments were reported for this "
+                "company during the past week."
+            )
 
-    return summaries, list(source_links)[:5]
+        summaries[company] = summary
+
+    return summaries
 
 # ===================== PDF =====================
 def generate_pdf(industry_summary, company_summaries):
@@ -136,28 +149,31 @@ def generate_pdf(industry_summary, company_summaries):
     story.append(Spacer(1, 12))
     story.append(Paragraph(datetime.now().strftime("%B %d, %Y"), styles["BodyText"]))
     story.append(HRFlowable(width="100%"))
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 16))
 
     story.append(Paragraph("Industry Intelligence – Specialty Chemicals", section))
     story.append(Spacer(1, 10))
-    story.append(Paragraph(industry_summary or "No significant updates this week.", styles["BodyText"]))
+    story.append(Paragraph(industry_summary, styles["BodyText"]))
 
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 18))
     story.append(Paragraph("Company-Specific Highlights", section))
+    story.append(Spacer(1, 10))
 
     for company, summary in company_summaries.items():
-        story.append(Spacer(1, 8))
         story.append(Paragraph(company, styles["Heading3"]))
+        story.append(Spacer(1, 6))
         story.append(Paragraph(summary, styles["BodyText"]))
+        story.append(Spacer(1, 12))
 
     doc.build(story)
     return filename
 
 # ===================== PIPELINE =====================
 async def run_pipeline(companies):
-    industry_summary, _, _ = await fetch_industry_news()
-    company_summaries, _ = await fetch_company_news(companies)
-    return generate_pdf(industry_summary, company_summaries)
+    industry_summary = await fetch_industry_news()
+    company_summaries = await fetch_company_news(companies)
+    pdf_file = generate_pdf(industry_summary, company_summaries)
+    return industry_summary, company_summaries, pdf_file
 
 # ===================== UI =====================
 companies_input = st.text_area(
@@ -166,15 +182,26 @@ companies_input = st.text_area(
 )
 
 if st.button("🚀 Generate Weekly Report"):
-    with st.spinner("Fetching news, summarizing & generating PDF..."):
+    with st.spinner("Generating clean, formatted report..."):
         companies = [c.strip() for c in companies_input.split("\n") if c.strip()]
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        pdf = loop.run_until_complete(run_pipeline(companies))
+        industry_summary, company_summaries, pdf = loop.run_until_complete(
+            run_pipeline(companies)
+        )
 
-    st.success("✅ Report generated successfully")
+    # ===== DISPLAY ON SITE =====
+    st.success("✅ Report generated")
 
+    st.header("Industry Intelligence – Specialty Chemicals")
+    st.write(industry_summary)
+
+    st.header("Company-Specific Highlights")
+    for company, summary in company_summaries.items():
+        st.subheader(company)
+        st.write(summary)
+
+    # ===== DOWNLOAD =====
     with open(pdf, "rb") as f:
         st.download_button(
             "📄 Download PDF",
