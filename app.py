@@ -1,13 +1,10 @@
-import os
-import re
 import asyncio
+import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
 import streamlit as st
-from bs4 import BeautifulSoup
-from serpapi import GoogleSearch
-from playwright.async_api import async_playwright
+import requests
 from transformers import pipeline
 
 from reportlab.lib.pagesizes import LETTER
@@ -16,18 +13,18 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
 # ===================== CONFIG =====================
-SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
+SERP_API_KEY = "14386fbcac3862b9e4a01e7b81d452c828740f448f09ca2f4c42995ed4e5bb6c"
 
 INDUSTRY_SEARCH_QUERY = (
     "specialty chemicals OR non-ionic surfactants OR ethylene oxide "
     "OR green chemistry OR bio-based intermediates OR tariffs OR regulation OR supply chain"
 )
 
-# ===================== STREAMLIT SETUP =====================
+# ===================== STREAMLIT =====================
 st.set_page_config(page_title="Automated Weekly Insights", layout="centered")
 st.title("📊 Automated Weekly Insights – Specialty Chemicals")
 
-# ===================== LOAD MODEL (CACHED) =====================
+# ===================== MODEL (CACHED) =====================
 @st.cache_resource
 def load_model():
     return pipeline("summarization", model="facebook/bart-large-cnn")
@@ -36,7 +33,8 @@ summarizer = load_model()
 
 # ===================== HELPERS =====================
 def clean_text(text):
-    text = text.replace("\n", " ").replace("?", "").replace("  ", " ")
+    text = text.replace("\n", " ").replace("?", "")
+    text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\s+\S*$", "", text)
     return text.strip()
 
@@ -59,49 +57,42 @@ def remove_similar(sentences, threshold=0.85):
             result.append(s)
     return result
 
-# ===================== INDUSTRY NEWS =====================
-async def fetch_industry_news():
+# ===================== SERPAPI (REST) =====================
+def serpapi_news_search(query, num=10):
+    url = "https://serpapi.com/search.json"
     params = {
-        "q": INDUSTRY_SEARCH_QUERY,
+        "engine": "google",
+        "q": query,
         "tbm": "nws",
         "tbs": "qdr:d7",
+        "num": num,
         "api_key": SERP_API_KEY,
-        "num": 15,
     }
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+    return response.json().get("news_results", [])
 
-    search = GoogleSearch(params)
-    results = search.get_dict().get("news_results", [])
+# ===================== INDUSTRY NEWS =====================
+async def fetch_industry_news():
+    results = serpapi_news_search(INDUSTRY_SEARCH_QUERY, num=15)
 
-    snippets, news_list, source_links = [], [], set()
+    snippets = []
+    news_list = []
+    source_links = set()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-
-        for r in results:
-            page = await browser.new_page()
-            try:
-                await page.goto(r["link"], wait_until="domcontentloaded", timeout=20000)
-                soup = BeautifulSoup(await page.content(), "html.parser")
-                tag = soup.find("meta", property="og:description")
-                snippet = clean_text(tag["content"]) if tag else ""
-            except:
-                snippet = ""
-
-            await page.close()
-
-            if snippet:
-                snippets.append(snippet)
-                news_list.append(
-                    {
-                        "Headline": r.get("title", ""),
-                        "Date": r.get("date", ""),
-                        "URL": r.get("link", ""),
-                        "Content": snippet,
-                    }
-                )
-                source_links.add(r.get("link", ""))
-
-        await browser.close()
+    for r in results:
+        snippet = clean_text(r.get("snippet", ""))
+        if snippet:
+            snippets.append(snippet)
+            news_list.append(
+                {
+                    "Headline": r.get("title", ""),
+                    "Date": r.get("date", ""),
+                    "URL": r.get("link", ""),
+                    "Content": snippet,
+                }
+            )
+            source_links.add(r.get("link", ""))
 
     unique_snippets = remove_similar(list(dict.fromkeys(snippets)))
     summary = summarize_text(" ".join(unique_snippets))
@@ -109,52 +100,29 @@ async def fetch_industry_news():
 
 # ===================== COMPANY NEWS =====================
 async def fetch_company_news(companies):
-    summaries, all_news, source_links = {}, [], set()
+    summaries = {}
+    source_links = set()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    for company in companies:
+        results = serpapi_news_search(company, num=5)
+        snippets = []
 
-        for company in companies:
-            params = {
-                "q": company,
-                "tbm": "nws",
-                "tbs": "qdr:d7",
-                "api_key": SERP_API_KEY,
-                "num": 5,
-            }
+        for r in results:
+            snippet = clean_text(r.get("snippet", ""))
+            if snippet:
+                snippets.append(snippet)
+                source_links.add(r.get("link", ""))
 
-            search = GoogleSearch(params)
-            results = search.get_dict().get("news_results", [])
-            snippets = []
+        unique_snippets = remove_similar(list(dict.fromkeys(snippets)))
+        combined = " ".join(unique_snippets)
 
-            for r in results:
-                page = await browser.new_page()
-                try:
-                    await page.goto(r["link"], wait_until="domcontentloaded", timeout=20000)
-                    soup = BeautifulSoup(await page.content(), "html.parser")
-                    tag = soup.find("meta", property="og:description")
-                    snippet = clean_text(tag["content"]) if tag else ""
-                except:
-                    snippet = ""
+        if combined:
+            summaries[company] = summarize_text(combined)
 
-                await page.close()
-
-                if snippet:
-                    snippets.append(snippet)
-                    source_links.add(r["link"])
-
-            unique_snippets = remove_similar(list(dict.fromkeys(snippets)))
-            combined = " ".join(unique_snippets)
-
-            if combined:
-                summaries[company] = summarize_text(combined)
-
-        await browser.close()
-
-    return summaries, all_news, list(source_links)[:5]
+    return summaries, list(source_links)[:5]
 
 # ===================== PDF =====================
-def generate_pdf(industry_summary, industry_news, company_summaries, industry_sources, company_sources):
+def generate_pdf(industry_summary, company_summaries):
     filename = f"Weekly_Insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
 
     doc = SimpleDocTemplate(filename, pagesize=LETTER)
@@ -172,10 +140,10 @@ def generate_pdf(industry_summary, industry_news, company_summaries, industry_so
 
     story.append(Paragraph("Industry Intelligence – Specialty Chemicals", section))
     story.append(Spacer(1, 10))
-    story.append(Paragraph(industry_summary, styles["BodyText"]))
+    story.append(Paragraph(industry_summary or "No significant updates this week.", styles["BodyText"]))
 
     story.append(Spacer(1, 15))
-    story.append(Paragraph("Company Highlights", section))
+    story.append(Paragraph("Company-Specific Highlights", section))
 
     for company, summary in company_summaries.items():
         story.append(Spacer(1, 8))
@@ -187,16 +155,9 @@ def generate_pdf(industry_summary, industry_news, company_summaries, industry_so
 
 # ===================== PIPELINE =====================
 async def run_pipeline(companies):
-    industry_summary, industry_news, industry_sources = await fetch_industry_news()
-    company_summaries, _, company_sources = await fetch_company_news(companies)
-
-    return generate_pdf(
-        industry_summary,
-        industry_news,
-        company_summaries,
-        industry_sources,
-        company_sources,
-    )
+    industry_summary, _, _ = await fetch_industry_news()
+    company_summaries, _ = await fetch_company_news(companies)
+    return generate_pdf(industry_summary, company_summaries)
 
 # ===================== UI =====================
 companies_input = st.text_area(
@@ -212,7 +173,7 @@ if st.button("🚀 Generate Weekly Report"):
         asyncio.set_event_loop(loop)
         pdf = loop.run_until_complete(run_pipeline(companies))
 
-    st.success("✅ Report generated")
+    st.success("✅ Report generated successfully")
 
     with open(pdf, "rb") as f:
         st.download_button(
