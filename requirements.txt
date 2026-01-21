@@ -1,5 +1,7 @@
 streamlit
-pandas
-openpyxl
+playwright
+beautifulsoup4
+serpapi
+transformers
+torch
 reportlab
-sumy
