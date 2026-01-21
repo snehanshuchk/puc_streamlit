@@ -13,7 +13,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
 # ===================== CONFIG =====================
-SERP_API_KEY = "14386fbcac3862b9e4a01e7b81d452c828740f448f09ca2f4c42995ed4e5bb6c"
+SERP_API_KEY = ""
 
 INDUSTRY_SEARCH_QUERY = (
     "specialty chemicals OR surfactants OR ethylene oxide OR green chemistry "
