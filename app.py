@@ -1,12 +1,9 @@
 import re
-import asyncio
 import base64
 from datetime import datetime
 
 import streamlit as st
-from bs4 import BeautifulSoup
-from serpapi.google_search import GoogleSearch
-from playwright.async_api import async_playwright
+import requests
 from google import genai
 
 from reportlab.lib.pagesizes import LETTER
@@ -18,7 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 st.set_page_config(page_title="Market Intelligence", layout="wide")
 st.title("📊 Market Intelligence Dashboard")
 
-# ===================== API KEYS (REPLACE THESE) =====================
+# ===================== API KEYS (REPLACE THESE VALUES) =====================
 SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
 GEMINI_API_KEY = "AIzaSyBb_0Opc3mUWkBkYpNVwKlk6UaF4nSLzYI"
 
@@ -38,41 +35,52 @@ INDUSTRY_SEARCH_QUERY = (
     "OR green chemistry OR bio-based intermediates OR regulation OR supply chain"
 )
 
-# ===================== TEXT NORMALIZATION =====================
+# ===================== TEXT CLEANUP =====================
 def normalize_text(text: str) -> str:
-    text = re.sub(r"\.{2,}", ".", text)     # remove ...
+    text = re.sub(r"\.{2,}", ".", text)
     text = re.sub(r"\s+", " ", text).strip()
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    cleaned = []
+    out = []
 
     for s in sentences:
-        s = s.strip()
         if not s:
             continue
         s = s[0].upper() + s[1:]
         if not s.endswith("."):
             s += "."
-        cleaned.append(s)
+        out.append(s)
 
-    return " ".join(cleaned)
+    return " ".join(out)
+
+# ===================== SERPAPI FETCH =====================
+def fetch_news(query, num=10):
+    params = {
+        "engine": "google_news",
+        "q": query,
+        "api_key": SERP_API_KEY,
+        "num": num
+    }
+    r = requests.get("https://serpapi.com/search.json", params=params, timeout=30)
+    r.raise_for_status()
+    return r.json().get("news_results", [])
 
 # ===================== GEMINI =====================
-def gemini_summarize(raw_text: str) -> str:
-    if len(raw_text) < 200:
+def gemini_summarize(text: str) -> str:
+    if len(text) < 200:
         return ""
 
     prompt = f"""
 Role: Senior Market Intelligence Analyst.
 
 Rules:
-- Professional grammar.
-- Sentences start with capital letters.
-- Sentences end with a single period.
-- No ellipses.
+- Professional grammar
+- Capitalized sentence starts
+- Single period endings
+- No ellipses
 
 RAW NEWS:
-{raw_text}
+{text}
 """
 
     response = client.models.generate_content(
@@ -82,71 +90,37 @@ RAW NEWS:
 
     return normalize_text(response.text)
 
-# ===================== INDUSTRY NEWS =====================
-async def fetch_industry_news():
-    params = {
-        "q": INDUSTRY_SEARCH_QUERY,
-        "tbm": "nws",
-        "tbs": "qdr:d7",
-        "api_key": SERP_API_KEY,
-        "num": 15
-    }
+# ===================== INDUSTRY =====================
+def get_industry_news():
+    results = fetch_news(INDUSTRY_SEARCH_QUERY, 15)
+    snippets = []
+    links = []
 
-    results = GoogleSearch(params).get_dict().get("news_results", [])
-    snippets, sources = [], set()
+    for r in results:
+        if "snippet" in r:
+            snippets.append(r["snippet"])
+        if "link" in r:
+            links.append(r["link"])
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    return gemini_summarize(" ".join(snippets)), links[:5]
+
+# ===================== COMPETITORS =====================
+def get_company_news():
+    snippets = []
+    links = []
+
+    for company in COMPETITORS:
+        results = fetch_news(company, 5)
         for r in results:
-            page = await browser.new_page()
-            try:
-                await page.goto(r["link"], timeout=20000)
-                soup = BeautifulSoup(await page.content(), "html.parser")
-                meta = soup.find("meta", property="og:description")
-                if meta:
-                    snippets.append(meta["content"])
-                    sources.add(r["link"])
-            except:
-                pass
-            await page.close()
-        await browser.close()
+            if "snippet" in r:
+                snippets.append(f"{company}: {r['snippet']}")
+            if "link" in r:
+                links.append(r["link"])
 
-    return gemini_summarize(" ".join(snippets)), list(sources)[:5]
-
-# ===================== COMPANY NEWS =====================
-async def fetch_company_news():
-    snippets, sources = [], set()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        for company in COMPETITORS:
-            params = {
-                "q": company,
-                "tbm": "nws",
-                "tbs": "qdr:d7",
-                "api_key": SERP_API_KEY,
-                "num": 5
-            }
-
-            results = GoogleSearch(params).get_dict().get("news_results", [])
-            for r in results:
-                page = await browser.new_page()
-                try:
-                    await page.goto(r["link"], timeout=20000)
-                    soup = BeautifulSoup(await page.content(), "html.parser")
-                    meta = soup.find("meta", property="og:description")
-                    if meta:
-                        snippets.append(f"{company}: {meta['content']}")
-                        sources.add(r["link"])
-                except:
-                    pass
-                await page.close()
-        await browser.close()
-
-    return gemini_summarize(" ".join(snippets)), list(sources)[:5]
+    return gemini_summarize(" ".join(snippets)), links[:5]
 
 # ===================== PDF =====================
-def generate_pdf(industry, company, industry_sources, company_sources):
+def generate_pdf(industry, company, src1, src2):
     filename = f"Market_Intelligence_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
     doc = SimpleDocTemplate(filename, pagesize=LETTER)
 
@@ -175,17 +149,17 @@ def generate_pdf(industry, company, industry_sources, company_sources):
         Paragraph("Source Links", section)
     ]
 
-    for link in industry_sources + company_sources:
+    for link in src1 + src2:
         story.append(Paragraph(f"<a href='{link}'>{link}</a>", styles["Italic"]))
 
     doc.build(story)
     return filename
 
-# ===================== STREAMLIT UI =====================
+# ===================== UI =====================
 if st.button("Generate Latest Report"):
     with st.spinner("Generating report..."):
-        industry, ind_src = asyncio.run(fetch_industry_news())
-        company, comp_src = asyncio.run(fetch_company_news())
+        industry, ind_src = get_industry_news()
+        company, comp_src = get_company_news()
         pdf_path = generate_pdf(industry, company, ind_src, comp_src)
 
     st.header("Industry Intelligence")
