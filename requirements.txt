@@ -1,6 +1,4 @@
 streamlit
-serpapi
+requests
 google-generativeai
-beautifulsoup4
-playwright
 reportlab
