@@ -16,8 +16,8 @@ st.set_page_config(page_title="Market Intelligence", layout="wide")
 st.title("📊 Market Intelligence Dashboard")
 
 # ===================== API KEYS (REPLACE WITH YOUR REAL KEYS) =====================
-SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
-GEMINI_API_KEY = "AIzaSyBb_0Opc3mUWkBkYpNVwKlk6UaF4nSLzYI"
+SERP_API_KEY = ""
+GEMINI_API_KEY = ""
 
 # ===================== GEMINI CONFIG =====================
 genai.configure(api_key=GEMINI_API_KEY)
