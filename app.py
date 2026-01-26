@@ -16,8 +16,8 @@ st.set_page_config(page_title="Market Intelligence", layout="wide")
 st.title("📊 Market Intelligence Dashboard")
 
 # ===================== API KEYS (REPLACE WITH YOUR REAL KEYS) =====================
-SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
-GEMINI_API_KEY = "AIzaSyBb_0Opc3mUWkBkYpNVwKlk6UaF4nSLzYI"
+SERP_API_KEY = "YOUR_REAL_SERPAPI_KEY_HERE"
+GEMINI_API_KEY = "YOUR_REAL_GEMINI_API_KEY_HERE"
 
 # ===================== GEMINI CONFIG =====================
 genai.configure(api_key=GEMINI_API_KEY)
@@ -117,4 +117,65 @@ def get_company_news():
 
 # ===================== PDF =====================
 def generate_pdf(industry, company, src1, src2):
-    filename = f"Market_Intelligence_Report_{datetime.now()._
+    filename = f"Market_Intelligence_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
+    doc = SimpleDocTemplate(filename, pagesize=LETTER)
+
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("title", fontSize=22, textColor=colors.darkblue)
+    section = ParagraphStyle("section", fontSize=16, textColor=colors.navy)
+    body = ParagraphStyle("body", fontSize=11, leading=16)
+
+    story = [
+        Paragraph("Market Intelligence Report", title),
+        Spacer(1, 12),
+        Paragraph(datetime.now().strftime("%B %d, %Y"), styles["Normal"]),
+        HRFlowable(width="100%"),
+        Spacer(1, 20),
+
+        Paragraph("Industry Intelligence", section),
+        Spacer(1, 10),
+        Paragraph(industry, body),
+        Spacer(1, 20),
+
+        Paragraph("Competitive Landscape Impact", section),
+        Spacer(1, 10),
+        Paragraph(company, body),
+        Spacer(1, 20),
+
+        Paragraph("Source Links", section)
+    ]
+
+    for link in src1 + src2:
+        story.append(Paragraph(f"<a href='{link}'>{link}</a>", styles["Italic"]))
+
+    doc.build(story)
+    return filename
+
+# ===================== UI =====================
+if st.button("Generate Latest Report"):
+    with st.spinner("Generating report..."):
+        industry, ind_src = get_industry_news()
+        company, comp_src = get_company_news()
+        pdf_path = generate_pdf(industry, company, ind_src, comp_src)
+
+    st.header("Industry Intelligence")
+    st.write(industry)
+
+    st.header("Competitive Landscape Impact")
+    st.write(company)
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+        b64 = base64.b64encode(pdf_bytes).decode()
+
+    st.markdown(
+        f"<iframe src='data:application/pdf;base64,{b64}' width='100%' height='600'></iframe>",
+        unsafe_allow_html=True
+    )
+
+    st.download_button(
+        "⬇️ Download PDF",
+        pdf_bytes,
+        file_name=pdf_path,
+        mime="application/pdf"
+    )
