@@ -1,11 +1,14 @@
-import asyncio
+import os
 import re
+import asyncio
+import base64
 from datetime import datetime
-from difflib import SequenceMatcher
 
 import streamlit as st
-import requests
-from transformers import pipeline
+from bs4 import BeautifulSoup
+from serpapi import GoogleSearch
+from playwright.async_api import async_playwright
+from google import genai
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
@@ -13,199 +16,193 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
 # ===================== CONFIG =====================
-SERP_API_KEY = ""
+SERP_API_KEY = st.secrets["SERP_API_KEY"]
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+
+COMPETITORS = ["BASF", "Dow", "Stepan Company", "Croda International", "Clariant"]
 
 INDUSTRY_SEARCH_QUERY = (
-    "specialty chemicals OR surfactants OR ethylene oxide OR green chemistry "
-    "OR bio-based intermediates OR specialty materials OR chemical supply chain"
+    "specialty chemicals OR non-ionic surfactants OR ethylene oxide "
+    "OR green chemistry OR bio-based intermediates OR regulation OR supply chain"
 )
 
-CHEM_KEYWORDS = [
-    "chemical", "chemicals", "polymer", "resin", "surfactant",
-    "battery", "additive", "coating", "specialty", "materials",
-    "sustainability", "bio", "ethylene", "oxide", "pharma"
-]
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ===================== STREAMLIT =====================
-st.set_page_config(page_title="Automated Weekly Insights", layout="centered")
-st.title("📊 Automated Weekly Insights – Specialty Chemicals")
+# ===================== TEXT CLEANING =====================
+def normalize_text(text: str) -> str:
+    text = re.sub(r"\.{2,}", ".", text)          # remove ...
+    text = re.sub(r"\s+", " ", text).strip()
 
-# ===================== MODEL =====================
-@st.cache_resource
-def load_model():
-    return pipeline("summarization", model="facebook/bart-large-cnn")
-
-summarizer = load_model()
-
-# ===================== TEXT HELPERS =====================
-def clean_text(text):
-    text = text.replace("\n", " ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-def normalize_sentences(text):
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 40]
-    return " ".join(sentences)
+    cleaned = []
 
-def summarize_text(text, max_len=140, min_len=60):
-    if not text or len(text) < 100:
-        return ""
-    result = summarizer(
-        text[:1024],
-        max_length=max_len,
-        min_length=min_len,
-        do_sample=False,
-    )
-    return clean_text(result[0]["summary_text"])
-
-def remove_similar(sentences, threshold=0.85):
-    result = []
     for s in sentences:
-        if all(SequenceMatcher(None, s, r).ratio() < threshold for r in result):
-            result.append(s)
-    return result
+        s = s.strip()
+        if not s:
+            continue
+        s = s[0].upper() + s[1:]
+        if not s.endswith("."):
+            s += "."
+        cleaned.append(s)
 
-def is_relevant(text):
-    t = text.lower()
-    return any(k in t for k in CHEM_KEYWORDS)
+    return " ".join(cleaned)
 
-# ===================== SERPAPI =====================
-def serpapi_news_search(query, num=10):
-    url = "https://serpapi.com/search.json"
+# ===================== GEMINI =====================
+def gemini_summarize(raw_text, mode="industry"):
+    if len(raw_text) < 200:
+        return ""
+
+    prompt = f"""
+Role: Senior Market Intelligence Analyst.
+
+Objective:
+Summarize the most impactful developments from the last 7 days.
+Ensure formal grammar, professional tone, and complete sentences.
+
+RAW NEWS:
+{raw_text}
+"""
+
+    response = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        contents=prompt
+    )
+
+    return normalize_text(response.text)
+
+# ===================== SCRAPERS =====================
+async def fetch_industry_news():
     params = {
-        "engine": "google",
-        "q": query,
+        "q": INDUSTRY_SEARCH_QUERY,
         "tbm": "nws",
         "tbs": "qdr:d7",
-        "num": num,
         "api_key": SERP_API_KEY,
+        "num": 15
     }
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json().get("news_results", [])
 
-# ===================== INDUSTRY =====================
-async def fetch_industry_news():
-    results = serpapi_news_search(INDUSTRY_SEARCH_QUERY, 15)
-    snippets = []
+    results = GoogleSearch(params).get_dict().get("news_results", [])
+    snippets, sources = [], set()
 
-    for r in results:
-        snippet = clean_text(r.get("snippet", ""))
-        if snippet and is_relevant(snippet):
-            snippets.append(snippet)
-
-    snippets = remove_similar(snippets)
-    combined = normalize_sentences(" ".join(snippets))
-    summary = summarize_text(combined)
-
-    if not summary:
-        summary = (
-            "No major industry-wide developments were reported in the specialty "
-            "chemicals sector during the past week."
-        )
-
-    return summary
-
-# ===================== COMPANY =====================
-async def fetch_company_news(companies):
-    summaries = {}
-
-    for company in companies:
-        results = serpapi_news_search(company, 5)
-        snippets = []
-
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         for r in results:
-            snippet = clean_text(r.get("snippet", ""))
-            if snippet and is_relevant(snippet):
-                snippets.append(snippet)
+            page = await browser.new_page()
+            try:
+                await page.goto(r["link"], timeout=20000)
+                soup = BeautifulSoup(await page.content(), "html.parser")
+                meta = soup.find("meta", property="og:description")
+                if meta:
+                    snippets.append(meta["content"])
+                    sources.add(r["link"])
+            except:
+                pass
+            await page.close()
+        await browser.close()
 
-        snippets = remove_similar(snippets)
-        combined = normalize_sentences(" ".join(snippets))
-        summary = summarize_text(combined)
+    summary = gemini_summarize(" ".join(snippets))
+    return summary, list(sources)[:5]
 
-        if not summary or len(summary.split()) < 40:
-            summary = (
-                "No material corporate developments were reported for this "
-                "company during the past week."
-            )
+async def fetch_company_news():
+    snippets, sources = [], set()
 
-        summaries[company] = summary
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        for company in COMPETITORS:
+            params = {
+                "q": company,
+                "tbm": "nws",
+                "tbs": "qdr:d7",
+                "api_key": SERP_API_KEY,
+                "num": 5
+            }
 
-    return summaries
+            results = GoogleSearch(params).get_dict().get("news_results", [])
+            for r in results:
+                page = await browser.new_page()
+                try:
+                    await page.goto(r["link"], timeout=20000)
+                    soup = BeautifulSoup(await page.content(), "html.parser")
+                    meta = soup.find("meta", property="og:description")
+                    if meta:
+                        snippets.append(f"{company}: {meta['content']}")
+                        sources.add(r["link"])
+                except:
+                    pass
+                await page.close()
+        await browser.close()
+
+    summary = gemini_summarize(" ".join(snippets))
+    return summary, list(sources)[:5]
 
 # ===================== PDF =====================
-def generate_pdf(industry_summary, company_summaries):
-    filename = f"Weekly_Insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
+def generate_pdf(industry, company, industry_sources, company_sources):
+    filename = f"Market_Intelligence_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
     doc = SimpleDocTemplate(filename, pagesize=LETTER)
+
     styles = getSampleStyleSheet()
-    story = []
+    title = ParagraphStyle("title", fontSize=22, textColor=colors.darkblue)
+    section = ParagraphStyle("section", fontSize=16, textColor=colors.navy)
+    body = ParagraphStyle("body", fontSize=11, leading=16)
 
-    title = ParagraphStyle("Title", fontSize=22, textColor=colors.navy)
-    section = ParagraphStyle("Section", fontSize=16, textColor=colors.darkblue)
+    story = [
+        Paragraph("Market Intelligence Report", title),
+        Spacer(1, 12),
+        Paragraph(datetime.now().strftime("%B %d, %Y"), styles["Normal"]),
+        HRFlowable(width="100%"),
+        Spacer(1, 20),
 
-    story.append(Paragraph("Automated Weekly Insights", title))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(datetime.now().strftime("%B %d, %Y"), styles["BodyText"]))
-    story.append(HRFlowable(width="100%"))
-    story.append(Spacer(1, 16))
+        Paragraph("Industry Intelligence", section),
+        Spacer(1, 10),
+        Paragraph(industry, body),
+        Spacer(1, 20),
 
-    story.append(Paragraph("Industry Intelligence – Specialty Chemicals", section))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph(industry_summary, styles["BodyText"]))
+        Paragraph("Competitive Landscape Impact", section),
+        Spacer(1, 10),
+        Paragraph(company, body),
+        Spacer(1, 20),
 
-    story.append(Spacer(1, 18))
-    story.append(Paragraph("Company-Specific Highlights", section))
-    story.append(Spacer(1, 10))
+        Paragraph("Source Links", section)
+    ]
 
-    for company, summary in company_summaries.items():
-        story.append(Paragraph(company, styles["Heading3"]))
-        story.append(Spacer(1, 6))
-        story.append(Paragraph(summary, styles["BodyText"]))
-        story.append(Spacer(1, 12))
+    for link in industry_sources + company_sources:
+        story.append(Paragraph(f"<a href='{link}'>{link}</a>", styles["Italic"]))
 
     doc.build(story)
     return filename
 
-# ===================== PIPELINE =====================
-async def run_pipeline(companies):
-    industry_summary = await fetch_industry_news()
-    company_summaries = await fetch_company_news(companies)
-    pdf_file = generate_pdf(industry_summary, company_summaries)
-    return industry_summary, company_summaries, pdf_file
+# ===================== STREAMLIT =====================
+st.set_page_config(page_title="Market Intelligence", layout="wide")
+st.title("📊 Market Intelligence Dashboard")
 
-# ===================== UI =====================
-companies_input = st.text_area(
-    "Enter company names (one per line)",
-    "BASF\nDow\nClariant\nEvonik\nSolvay",
-)
+if st.button("Generate Latest Report"):
+    with st.spinner("Collecting intelligence..."):
+        industry, ind_src = asyncio.run(fetch_industry_news())
+        company, comp_src = asyncio.run(fetch_company_news())
+        pdf_path = generate_pdf(industry, company, ind_src, comp_src)
 
-if st.button("🚀 Generate Weekly Report"):
-    with st.spinner("Generating clean, formatted report..."):
-        companies = [c.strip() for c in companies_input.split("\n") if c.strip()]
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        industry_summary, company_summaries, pdf = loop.run_until_complete(
-            run_pipeline(companies)
-        )
+    st.success("Report generated successfully.")
 
-    # ===== DISPLAY ON SITE =====
-    st.success("✅ Report generated")
+    st.header("Industry Intelligence")
+    st.write(industry)
 
-    st.header("Industry Intelligence – Specialty Chemicals")
-    st.write(industry_summary)
+    st.header("Competitive Landscape Impact")
+    st.write(company)
 
-    st.header("Company-Specific Highlights")
-    for company, summary in company_summaries.items():
-        st.subheader(company)
-        st.write(summary)
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+        b64 = base64.b64encode(pdf_bytes).decode()
 
-    # ===== DOWNLOAD =====
-    with open(pdf, "rb") as f:
-        st.download_button(
-            "📄 Download PDF",
-            f,
-            file_name=pdf,
-            mime="application/pdf",
-        )
+    st.markdown(
+        f"""
+        <iframe src="data:application/pdf;base64,{b64}"
+        width="100%" height="600"></iframe>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.download_button(
+        "⬇️ Download PDF",
+        pdf_bytes,
+        file_name=pdf_path,
+        mime="application/pdf"
+    )
