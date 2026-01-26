@@ -1,7 +1,6 @@
 streamlit
-playwright
-beautifulsoup4
 serpapi
-transformers
-torch
+google-generativeai
+beautifulsoup4
+playwright
 reportlab
