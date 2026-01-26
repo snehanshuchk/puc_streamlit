@@ -4,7 +4,7 @@ from datetime import datetime
 
 import streamlit as st
 import requests
-from google import genai
+import google.generativeai as genai
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
@@ -15,11 +15,13 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 st.set_page_config(page_title="Market Intelligence", layout="wide")
 st.title("📊 Market Intelligence Dashboard")
 
-# ===================== API KEYS (REPLACE THESE VALUES) =====================
-SERP_API_KEY = "3fb824092768ddbd78a7bdb8da513e6d63ce7dd19aa8337a616e5516d1f3331c"
-GEMINI_API_KEY = "AIzaSyBb_0Opc3mUWkBkYpNVwKlk6UaF4nSLzYI"
+# ===================== API KEYS (REPLACE WITH YOUR REAL KEYS) =====================
+SERP_API_KEY = "YOUR_REAL_SERPAPI_KEY_HERE"
+GEMINI_API_KEY = "YOUR_REAL_GEMINI_API_KEY_HERE"
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# ===================== GEMINI CONFIG =====================
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 # ===================== CONSTANTS =====================
 COMPETITORS = [
@@ -35,7 +37,7 @@ INDUSTRY_SEARCH_QUERY = (
     "OR green chemistry OR bio-based intermediates OR regulation OR supply chain"
 )
 
-# ===================== TEXT CLEANUP =====================
+# ===================== TEXT NORMALIZATION =====================
 def normalize_text(text: str) -> str:
     text = re.sub(r"\.{2,}", ".", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -53,7 +55,7 @@ def normalize_text(text: str) -> str:
 
     return " ".join(out)
 
-# ===================== SERPAPI FETCH =====================
+# ===================== SERPAPI =====================
 def fetch_news(query, num=10):
     params = {
         "engine": "google_news",
@@ -74,27 +76,22 @@ def gemini_summarize(text: str) -> str:
 Role: Senior Market Intelligence Analyst.
 
 Rules:
-- Professional grammar
-- Capitalized sentence starts
-- Single period endings
-- No ellipses
+- Professional grammar.
+- Capitalized sentence starts.
+- Single period at sentence end.
+- No ellipses.
 
 RAW NEWS:
 {text}
 """
 
-    response = client.models.generate_content(
-        model="gemini-3-flash-preview",
-        contents=prompt
-    )
-
+    response = model.generate_content(prompt)
     return normalize_text(response.text)
 
 # ===================== INDUSTRY =====================
 def get_industry_news():
     results = fetch_news(INDUSTRY_SEARCH_QUERY, 15)
-    snippets = []
-    links = []
+    snippets, links = [], []
 
     for r in results:
         if "snippet" in r:
@@ -104,10 +101,9 @@ def get_industry_news():
 
     return gemini_summarize(" ".join(snippets)), links[:5]
 
-# ===================== COMPETITORS =====================
+# ===================== COMPANIES =====================
 def get_company_news():
-    snippets = []
-    links = []
+    snippets, links = [], []
 
     for company in COMPETITORS:
         results = fetch_news(company, 5)
@@ -121,65 +117,4 @@ def get_company_news():
 
 # ===================== PDF =====================
 def generate_pdf(industry, company, src1, src2):
-    filename = f"Market_Intelligence_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
-    doc = SimpleDocTemplate(filename, pagesize=LETTER)
-
-    styles = getSampleStyleSheet()
-    title = ParagraphStyle("title", fontSize=22, textColor=colors.darkblue)
-    section = ParagraphStyle("section", fontSize=16, textColor=colors.navy)
-    body = ParagraphStyle("body", fontSize=11, leading=16)
-
-    story = [
-        Paragraph("Market Intelligence Report", title),
-        Spacer(1, 12),
-        Paragraph(datetime.now().strftime("%B %d, %Y"), styles["Normal"]),
-        HRFlowable(width="100%"),
-        Spacer(1, 20),
-
-        Paragraph("Industry Intelligence", section),
-        Spacer(1, 10),
-        Paragraph(industry, body),
-        Spacer(1, 20),
-
-        Paragraph("Competitive Landscape Impact", section),
-        Spacer(1, 10),
-        Paragraph(company, body),
-        Spacer(1, 20),
-
-        Paragraph("Source Links", section)
-    ]
-
-    for link in src1 + src2:
-        story.append(Paragraph(f"<a href='{link}'>{link}</a>", styles["Italic"]))
-
-    doc.build(story)
-    return filename
-
-# ===================== UI =====================
-if st.button("Generate Latest Report"):
-    with st.spinner("Generating report..."):
-        industry, ind_src = get_industry_news()
-        company, comp_src = get_company_news()
-        pdf_path = generate_pdf(industry, company, ind_src, comp_src)
-
-    st.header("Industry Intelligence")
-    st.write(industry)
-
-    st.header("Competitive Landscape Impact")
-    st.write(company)
-
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-        b64 = base64.b64encode(pdf_bytes).decode()
-
-    st.markdown(
-        f"<iframe src='data:application/pdf;base64,{b64}' width='100%' height='600'></iframe>",
-        unsafe_allow_html=True
-    )
-
-    st.download_button(
-        "⬇️ Download PDF",
-        pdf_bytes,
-        file_name=pdf_path,
-        mime="application/pdf"
-    )
+    filename = f"Market_Intelligence_Report_{datetime.now()._
