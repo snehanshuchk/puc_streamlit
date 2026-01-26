@@ -6,7 +6,7 @@ from datetime import datetime
 
 import streamlit as st
 from bs4 import BeautifulSoup
-from serpapi import GoogleSearch
+from serpapi.google_search import GoogleSearch
 from playwright.async_api import async_playwright
 from google import genai
 
