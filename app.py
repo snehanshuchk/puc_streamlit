@@ -1,4 +1,3 @@
-import os
 import re
 import asyncio
 import base64
@@ -15,22 +14,33 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
-# ===================== CONFIG =====================
-SERP_API_KEY = st.secrets["SERP_API_KEY"]
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+# ===================== STREAMLIT CONFIG =====================
+st.set_page_config(page_title="Market Intelligence", layout="wide")
+st.title("📊 Market Intelligence Dashboard")
 
-COMPETITORS = ["BASF", "Dow", "Stepan Company", "Croda International", "Clariant"]
+# ===================== API KEYS (REPLACE THESE) =====================
+SERP_API_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
+GEMINI_API_KEY = "PASTE_YOUR_GEMINI_KEY_HERE"
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ===================== CONSTANTS =====================
+COMPETITORS = [
+    "BASF",
+    "Dow",
+    "Stepan Company",
+    "Croda International",
+    "Clariant"
+]
 
 INDUSTRY_SEARCH_QUERY = (
     "specialty chemicals OR non-ionic surfactants OR ethylene oxide "
     "OR green chemistry OR bio-based intermediates OR regulation OR supply chain"
 )
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-# ===================== TEXT CLEANING =====================
+# ===================== TEXT NORMALIZATION =====================
 def normalize_text(text: str) -> str:
-    text = re.sub(r"\.{2,}", ".", text)          # remove ...
+    text = re.sub(r"\.{2,}", ".", text)     # remove ...
     text = re.sub(r"\s+", " ", text).strip()
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
@@ -48,16 +58,18 @@ def normalize_text(text: str) -> str:
     return " ".join(cleaned)
 
 # ===================== GEMINI =====================
-def gemini_summarize(raw_text, mode="industry"):
+def gemini_summarize(raw_text: str) -> str:
     if len(raw_text) < 200:
         return ""
 
     prompt = f"""
 Role: Senior Market Intelligence Analyst.
 
-Objective:
-Summarize the most impactful developments from the last 7 days.
-Ensure formal grammar, professional tone, and complete sentences.
+Rules:
+- Professional grammar.
+- Sentences start with capital letters.
+- Sentences end with a single period.
+- No ellipses.
 
 RAW NEWS:
 {raw_text}
@@ -70,7 +82,7 @@ RAW NEWS:
 
     return normalize_text(response.text)
 
-# ===================== SCRAPERS =====================
+# ===================== INDUSTRY NEWS =====================
 async def fetch_industry_news():
     params = {
         "q": INDUSTRY_SEARCH_QUERY,
@@ -99,9 +111,9 @@ async def fetch_industry_news():
             await page.close()
         await browser.close()
 
-    summary = gemini_summarize(" ".join(snippets))
-    return summary, list(sources)[:5]
+    return gemini_summarize(" ".join(snippets)), list(sources)[:5]
 
+# ===================== COMPANY NEWS =====================
 async def fetch_company_news():
     snippets, sources = [], set()
 
@@ -131,8 +143,7 @@ async def fetch_company_news():
                 await page.close()
         await browser.close()
 
-    summary = gemini_summarize(" ".join(snippets))
-    return summary, list(sources)[:5]
+    return gemini_summarize(" ".join(snippets)), list(sources)[:5]
 
 # ===================== PDF =====================
 def generate_pdf(industry, company, industry_sources, company_sources):
@@ -170,17 +181,12 @@ def generate_pdf(industry, company, industry_sources, company_sources):
     doc.build(story)
     return filename
 
-# ===================== STREAMLIT =====================
-st.set_page_config(page_title="Market Intelligence", layout="wide")
-st.title("📊 Market Intelligence Dashboard")
-
+# ===================== STREAMLIT UI =====================
 if st.button("Generate Latest Report"):
-    with st.spinner("Collecting intelligence..."):
+    with st.spinner("Generating report..."):
         industry, ind_src = asyncio.run(fetch_industry_news())
         company, comp_src = asyncio.run(fetch_company_news())
         pdf_path = generate_pdf(industry, company, ind_src, comp_src)
-
-    st.success("Report generated successfully.")
 
     st.header("Industry Intelligence")
     st.write(industry)
@@ -193,11 +199,8 @@ if st.button("Generate Latest Report"):
         b64 = base64.b64encode(pdf_bytes).decode()
 
     st.markdown(
-        f"""
-        <iframe src="data:application/pdf;base64,{b64}"
-        width="100%" height="600"></iframe>
-        """,
-        unsafe_allow_html=True,
+        f"<iframe src='data:application/pdf;base64,{b64}' width='100%' height='600'></iframe>",
+        unsafe_allow_html=True
     )
 
     st.download_button(
