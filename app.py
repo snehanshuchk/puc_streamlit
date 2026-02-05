@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 from serpapi import GoogleSearch
-import google.generativeai as genai
+from google import genai
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
@@ -16,7 +16,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 SERP_API_KEY = st.secrets["SERP_API_KEY"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 COMPETITORS = [
     "BASF",
@@ -49,7 +49,7 @@ def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-# ===================== GEMINI =====================
+# ===================== GEMINI (NEW SDK) =====================
 
 def gemini_summarize(raw_text, mode="industry"):
     if len(raw_text) < 200:
@@ -86,9 +86,10 @@ RAW NEWS:
 {raw_text}
 """
 
-    # ✅ ONLY supported model for google-generativeai
-    model = genai.GenerativeModel("gemini-pro")
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt
+    )
 
     return response.text.strip()
 
