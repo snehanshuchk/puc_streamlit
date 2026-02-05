@@ -86,7 +86,8 @@ RAW NEWS:
 {raw_text}
 """
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    # ✅ ONLY supported model for google-generativeai
+    model = genai.GenerativeModel("gemini-pro")
     response = model.generate_content(prompt)
 
     return response.text.strip()
