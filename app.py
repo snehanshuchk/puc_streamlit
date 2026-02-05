@@ -89,8 +89,8 @@ RAW NEWS:
 
     # 🔑 FULLY QUALIFIED MODEL NAME (THIS FIXES 404)
     response = client.models.generate_content(
-        model="models/gemini-1.5-flash",
-        contents=prompt
+    model="models/gemini-3.0-flash",
+    contents=prompt
     )
 
     return response.text.strip()
