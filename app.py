@@ -16,7 +16,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 # ===================== CONFIG =====================
 
 SERP_API_KEY = st.secrets["SERP_API_KEY"]
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
 COMPETITORS = [
     "BASF",
