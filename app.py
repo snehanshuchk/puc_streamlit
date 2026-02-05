@@ -2,7 +2,7 @@ import re
 from datetime import datetime, timedelta
 
 import streamlit as st
-from serpapi import GoogleSearch
+from serpapi.google_search_results import GoogleSearch
 from google import genai
 
 from reportlab.lib.pagesizes import LETTER
