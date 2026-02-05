@@ -1,5 +1,5 @@
 streamlit
-serpapi
+google-search-results
 google-generativeai
 beautifulsoup4
 reportlab
