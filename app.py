@@ -16,7 +16,11 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 SERP_API_KEY = st.secrets["SERP_API_KEY"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# ✅ IMPORTANT: api_version="v1" is REQUIRED for Gemini 1.5 models
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    api_version="v1"
+)
 
 COMPETITORS = [
     "BASF",
@@ -49,7 +53,7 @@ def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-# ===================== GEMINI (NEW SDK) =====================
+# ===================== GEMINI (NEW SDK, FIXED) =====================
 
 def gemini_summarize(raw_text, mode="industry"):
     if len(raw_text) < 200:
