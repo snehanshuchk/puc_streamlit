@@ -3,7 +3,9 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 from serpapi import GoogleSearch
-from google import genai
+import google.generativeai as genai
+
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
