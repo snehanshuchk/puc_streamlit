@@ -1,181 +1,214 @@
 import re
-import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
-import requests
-import google.generativeai as genai
+from serpapi import GoogleSearch
+from google import genai
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 
-# ===================== STREAMLIT CONFIG =====================
-st.set_page_config(page_title="Market Intelligence", layout="wide")
-st.title("📊 Market Intelligence Dashboard")
 
-# ===================== API KEYS (REPLACE WITH YOUR REAL KEYS) =====================
-SERP_API_KEY = ""
-GEMINI_API_KEY = ""
+# ===================== CONFIG =====================
 
-# ===================== GEMINI CONFIG =====================
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+SERP_API_KEY = st.secrets["SERP_API_KEY"]
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-# ===================== CONSTANTS =====================
 COMPETITORS = [
     "BASF",
-    "Dow",
-    "Stepan Company",
+    "Dow Chemical",
     "Croda International",
-    "Clariant"
+    "Clariant",
+    "Evonik Industries",
+    "Stepan Company"
 ]
 
 INDUSTRY_SEARCH_QUERY = (
-    "specialty chemicals OR non-ionic surfactants OR ethylene oxide "
-    "OR green chemistry OR bio-based intermediates OR regulation OR supply chain"
+    "ethylene oxide OR non-ionic surfactants OR specialty chemicals "
+    "OR green chemistry OR feedstock OR regulation OR sustainability"
 )
 
-# ===================== TEXT NORMALIZATION =====================
-def normalize_text(text: str) -> str:
-    text = re.sub(r"\.{2,}", ".", text)
-    text = re.sub(r"\s+", " ", text).strip()
+CATEGORIES = [
+    "Upstream & Feedstock Intelligence (Ethylene & Derivatives)",
+    "Market Dynamics & Demand Forecasting",
+    "Sustainability & Regulatory Intelligence",
+    "Operational & Competitive Intelligence",
+    "Innovation & Formulation Platforms",
+    "Merger and Acquisition",
+    "Latest Published Quarterly Results (Customers & Competitors)"
+]
 
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    out = []
+# ===================== GEMINI =====================
 
-    for s in sentences:
-        if not s:
-            continue
-        s = s[0].upper() + s[1:]
-        if not s.endswith("."):
-            s += "."
-        out.append(s)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-    return " ".join(out)
+def clean_text(text):
+    return re.sub(r"\s+", " ", text).strip()
 
-# ===================== SERPAPI =====================
-def fetch_news(query, num=10):
+def gemini_summarize(raw_text, mode="industry"):
+    if len(raw_text) < 200:
+        return ""
+
+    allowed = (
+        CATEGORIES[:5]
+        if mode == "industry"
+        else [
+            "Operational & Competitive Intelligence",
+            "Latest Published Quarterly Results (Customers & Competitors)"
+        ]
+    )
+
+    prompt = f"""
+Role: Senior Market Intelligence Analyst for the Specialty Chemicals industry.
+
+Objective:
+Identify the top 5–7 most impactful news stories from the past 7 days relevant to Indovinya.
+EXCLUDE any Indorama or Indovinya related news.
+
+High-Level Intelligence Categories:
+{", ".join(allowed)}
+
+STRICT OUTPUT FORMAT:
+NEWS_1
+CATEGORY:
+TITLE:
+SOURCE:
+SUMMARY:
+IMPACT:
+
+RAW NEWS:
+{raw_text}
+"""
+
+    response = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        contents=prompt
+    )
+
+    return response.text.strip()
+
+# ===================== PARSER =====================
+
+def parse_news_blocks(text):
+    blocks = re.split(r"NEWS_\d+", text)
+    items = []
+
+    for block in blocks:
+        data = dict(category="", title="", source="", summary="", impact="")
+        for line in block.split("\n"):
+            for key in data:
+                if line.startswith(key.upper() + ":"):
+                    data[key] = line.split(":", 1)[1].strip()
+        if data["title"]:
+            items.append(data)
+    return items
+
+# ===================== SERPAPI FETCH =====================
+
+@st.cache_data(ttl=3600)
+def fetch_serp_news(query, num=10):
     params = {
-        "engine": "google_news",
         "q": query,
+        "tbm": "nws",
+        "tbs": "qdr:d7",
         "api_key": SERP_API_KEY,
         "num": num
     }
-    r = requests.get("https://serpapi.com/search.json", params=params, timeout=30)
-    r.raise_for_status()
-    return r.json().get("news_results", [])
 
-# ===================== GEMINI =====================
-def gemini_summarize(text: str) -> str:
-    if len(text) < 200:
-        return ""
+    search = GoogleSearch(params)
+    results = search.get_dict().get("news_results", [])
 
-    prompt = f"""
-Role: Senior Market Intelligence Analyst.
-
-Rules:
-- Professional grammar.
-- Capitalized sentence starts.
-- Single period at sentence end.
-- No ellipses.
-
-RAW NEWS:
-{text}
-"""
-
-    response = model.generate_content(prompt)
-    return normalize_text(response.text)
-
-# ===================== INDUSTRY =====================
-def get_industry_news():
-    results = fetch_news(INDUSTRY_SEARCH_QUERY, 15)
-    snippets, links = [], []
-
+    snippets, sources = [], set()
     for r in results:
-        if "snippet" in r:
+        if r.get("snippet"):
             snippets.append(r["snippet"])
-        if "link" in r:
-            links.append(r["link"])
+        if r.get("link"):
+            sources.add(r["link"])
 
-    return gemini_summarize(" ".join(snippets)), links[:5]
+    return clean_text(" ".join(snippets)), list(sources)
 
-# ===================== COMPANIES =====================
-def get_company_news():
-    snippets, links = [], []
+def fetch_industry_news():
+    raw, sources = fetch_serp_news(INDUSTRY_SEARCH_QUERY, 15)
+    return gemini_summarize(raw, "industry"), sources
 
-    for company in COMPETITORS:
-        results = fetch_news(company, 5)
-        for r in results:
-            if "snippet" in r:
-                snippets.append(f"{company}: {r['snippet']}")
-            if "link" in r:
-                links.append(r["link"])
+def fetch_company_news():
+    all_snippets, all_sources = [], set()
+    for c in COMPETITORS:
+        raw, sources = fetch_serp_news(c, 5)
+        all_snippets.append(f"{c}: {raw}")
+        all_sources.update(sources)
 
-    return gemini_summarize(" ".join(snippets)), links[:5]
+    combined = clean_text(" ".join(all_snippets))
+    return gemini_summarize(combined, "company"), list(all_sources)
 
 # ===================== PDF =====================
-def generate_pdf(industry, company, src1, src2):
-    filename = f"Market_Intelligence_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
+
+def generate_pdf(industry_summary, company_summary, industry_sources, company_sources):
+    filename = f"Weekly_Strategic_Intelligence_{datetime.now():%Y%m%d}.pdf"
     doc = SimpleDocTemplate(filename, pagesize=LETTER)
 
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("title", fontSize=22, textColor=colors.darkblue)
-    section = ParagraphStyle("section", fontSize=16, textColor=colors.navy)
-    body = ParagraphStyle("body", fontSize=11, leading=16)
+    title = ParagraphStyle("title", fontSize=20, spaceAfter=16)
+    section = ParagraphStyle("section", fontSize=15, spaceBefore=18)
+    category = ParagraphStyle("category", fontSize=13, textColor=colors.darkblue)
+    body = ParagraphStyle("body", fontSize=11, leading=15)
 
-    story = [
-        Paragraph("Market Intelligence Report", title),
-        Spacer(1, 12),
-        Paragraph(datetime.now().strftime("%B %d, %Y"), styles["Normal"]),
+    story = []
+
+    end = datetime.now()
+    start = end - timedelta(days=7)
+
+    story += [
+        Paragraph("WEEKLY STRATEGIC INTELLIGENCE REPORT", title),
+        Paragraph(f"Reporting Period: {start:%d %B %Y} – {end:%d %B %Y}", body),
         HRFlowable(width="100%"),
-        Spacer(1, 20),
-
-        Paragraph("Industry Intelligence", section),
-        Spacer(1, 10),
-        Paragraph(industry, body),
-        Spacer(1, 20),
-
-        Paragraph("Competitive Landscape Impact", section),
-        Spacer(1, 10),
-        Paragraph(company, body),
-        Spacer(1, 20),
-
-        Paragraph("Source Links", section)
+        Spacer(1, 20)
     ]
 
-    for link in src1 + src2:
-        story.append(Paragraph(f"<a href='{link}'>{link}</a>", styles["Italic"]))
+    story.append(Paragraph("1. INDUSTRY INTELLIGENCE", section))
+    for item in parse_news_blocks(industry_summary):
+        story.append(Paragraph(item["category"], category))
+        story.append(Paragraph(item["title"], body))
+        story.append(Paragraph(item["summary"], body))
+        story.append(Paragraph(item["impact"], body))
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("2. COMPETITIVE LANDSCAPE", section))
+    for item in parse_news_blocks(company_summary):
+        story.append(Paragraph(item["category"], category))
+        story.append(Paragraph(item["title"], body))
+        story.append(Paragraph(item["summary"], body))
+        story.append(Paragraph(item["impact"], body))
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Source Links", section))
+    for link in sorted(set(industry_sources + company_sources)):
+        story.append(Paragraph(link, styles["Italic"]))
 
     doc.build(story)
     return filename
 
-# ===================== UI =====================
-if st.button("Generate Latest Report"):
-    with st.spinner("Generating report..."):
-        industry, ind_src = get_industry_news()
-        company, comp_src = get_company_news()
-        pdf_path = generate_pdf(industry, company, ind_src, comp_src)
+# ===================== STREAMLIT UI =====================
 
-    st.header("Industry Intelligence")
-    st.write(industry)
+st.set_page_config(page_title="Strategic Intelligence", layout="wide")
 
-    st.header("Competitive Landscape Impact")
-    st.write(company)
+st.title("📊 Weekly Strategic Intelligence Report")
+st.caption("Specialty Chemicals | EO | Surfactants")
 
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-        b64 = base64.b64encode(pdf_bytes).decode()
+if st.button("🚀 Generate Report"):
+    with st.spinner("Collecting news, analyzing with Gemini, generating PDF..."):
+        industry, i_src = fetch_industry_news()
+        company, c_src = fetch_company_news()
+        pdf = generate_pdf(industry, company, i_src, c_src)
 
-    st.markdown(
-        f"<iframe src='data:application/pdf;base64,{b64}' width='100%' height='600'></iframe>",
-        unsafe_allow_html=True
-    )
+    with open(pdf, "rb") as f:
+        st.download_button(
+            "⬇️ Download PDF",
+            f,
+            file_name=pdf,
+            mime="application/pdf"
+        )
 
-    st.download_button(
-        "⬇️ Download PDF",
-        pdf_bytes,
-        file_name=pdf_path,
-        mime="application/pdf"
-    )
+    st.success("Report generated successfully!")
