@@ -16,11 +16,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 SERP_API_KEY = st.secrets["SERP_API_KEY"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-# ✅ IMPORTANT: api_version="v1" is REQUIRED for Gemini 1.5 models
-client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    api_version="v1"
-)
+# ✅ Correct new SDK client (NO api_version)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 COMPETITORS = [
     "BASF",
@@ -49,13 +46,13 @@ CATEGORIES = [
 
 # ===================== UTIL =====================
 
-def clean_text(text):
+def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# ===================== GEMINI (NEW SDK, FIXED) =====================
+# ===================== GEMINI =====================
 
-def gemini_summarize(raw_text, mode="industry"):
+def gemini_summarize(raw_text: str, mode: str = "industry") -> str:
     if len(raw_text) < 200:
         return ""
 
@@ -100,7 +97,7 @@ RAW NEWS:
 
 # ===================== PARSER =====================
 
-def parse_news_blocks(text):
+def parse_news_blocks(text: str):
     blocks = re.split(r"NEWS_\d+", text)
     items = []
 
@@ -119,7 +116,7 @@ def parse_news_blocks(text):
 # ===================== SERPAPI =====================
 
 @st.cache_data(ttl=3600)
-def fetch_serp_news(query, num=10):
+def fetch_serp_news(query: str, num: int = 10):
     params = {
         "q": query,
         "tbm": "nws",
@@ -148,10 +145,12 @@ def fetch_industry_news():
 
 def fetch_company_news():
     all_snippets, all_sources = [], set()
+
     for company in COMPETITORS:
         raw, sources = fetch_serp_news(company, 5)
-        all_snippets.append(f"{company}: {raw}")
-        all_sources.update(sources)
+        if raw:
+            all_snippets.append(f"{company}: {raw}")
+            all_sources.update(sources)
 
     combined = clean_text(" ".join(all_snippets))
     return gemini_summarize(combined, "company"), list(all_sources)
